@@ -1,24 +1,11 @@
 require('dotenv').config();
-const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
-const { Client: AppwriteClient, Databases } = require('node-appwrite');
 const fs = require('fs');
 
 const app = express();
 app.use(express.json());
-
-/* -----------------------
-   Appwrite Setup
------------------------ */
-
-const appwrite = new AppwriteClient()
-    .setEndpoint(process.env.APPWRITE_ENDPOINT)
-    .setProject(process.env.APPWRITE_PROJECT_ID)
-    .setKey(process.env.APPWRITE_API_KEY);
-
-const databases = new Databases(appwrite);
 
 /* -----------------------
    WhatsApp Setup
@@ -138,22 +125,6 @@ client.on('message', async msg => {
 
     const userNumber = msg.from;
     const text = (msg.body || '').toLowerCase();
-
-    // Save message in Appwrite (don't crash bot on Appwrite errors)
-    try {
-        await databases.createDocument(
-            process.env.APPWRITE_DATABASE_ID,
-            process.env.APPWRITE_COLLECTION_ID,
-            'unique()',
-            {
-                number: userNumber,
-                message: msg.body || '',
-                timestamp: new Date().toISOString()
-            }
-        );
-    } catch (err) {
-        console.error('Failed to save message to Appwrite:', err && err.message ? err.message : err);
-    }
 
     // Helpful debug log to inspect incoming message type
     console.log('Incoming message type:', msg.type);
