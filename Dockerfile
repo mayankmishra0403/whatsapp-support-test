@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install system dependencies for Puppeteer / Chromium
 RUN apt-get update && apt-get install -y \
-    chromium-browser \
+    chromium \
     ca-certificates \
     fonts-liberation \
     libappindicator1 \
@@ -51,7 +51,7 @@ COPY . .
 EXPOSE 3000
 
 # Set Puppeteer to use system Chromium
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
