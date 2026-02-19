@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const express = require('express');
 const fs = require('fs');
 
@@ -113,8 +114,13 @@ async function sendWithRateLimit(msgOrNumber, text) {
     return true;
 }
 
+// Store latest QR string so the /qr endpoint can render it
+let latestQR = null;
+
 client.on('qr', qr => {
-    qrcode.generate(qr, { small: true });
+    latestQR = qr;
+    qrcode.generate(qr, { small: true }); // also print to logs as fallback
+    console.log('\n✅ QR Code ready! Open your Railway public URL + /qr to scan it in browser.\n');
 });
 
 client.on('ready', () => {
@@ -173,6 +179,41 @@ app.get('/health', (req, res) => {
         res.status(200).json({ status: 'ok', bot_ready: true });
     } else {
         res.status(200).json({ status: 'initializing', bot_ready: false });
+    }
+});
+
+// QR Code page — open this URL in browser to scan and authenticate WhatsApp
+app.get('/qr', async (req, res) => {
+    if (client.info && client.info.wid) {
+        return res.send(`
+            <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#f0fff0">
+            <h2 style="color:green">✅ WhatsApp Bot Already Authenticated!</h2>
+            <p>The bot is connected and running. No QR scan needed.</p>
+            </body></html>
+        `);
+    }
+    if (!latestQR) {
+        return res.send(`
+            <html><head><meta http-equiv="refresh" content="3"></head>
+            <body style="font-family:sans-serif;text-align:center;padding:40px">
+            <h2>⏳ QR Code Not Ready Yet...</h2>
+            <p>Bot is initializing. This page will auto-refresh every 3 seconds.</p>
+            </body></html>
+        `);
+    }
+    try {
+        const qrImageUrl = await QRCode.toDataURL(latestQR);
+        res.send(`
+            <html><head><meta http-equiv="refresh" content="30"></head>
+            <body style="font-family:sans-serif;text-align:center;padding:40px;background:#fffbe6">
+            <h2>📱 Scan QR Code with WhatsApp</h2>
+            <p>Open WhatsApp → <b>Linked Devices</b> → <b>Link a Device</b> → Scan below</p>
+            <img src="${qrImageUrl}" style="width:300px;height:300px;border:4px solid #333;border-radius:12px"/>
+            <p style="color:#888;font-size:13px">QR expires in ~20s. Page auto-refreshes every 30s.</p>
+            </body></html>
+        `);
+    } catch (err) {
+        res.status(500).send('Error generating QR: ' + err.message);
     }
 });
 
