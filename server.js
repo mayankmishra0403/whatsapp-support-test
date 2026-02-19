@@ -1,8 +1,10 @@
 require('dotenv').config();
+const path = require('path');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const { Client: AppwriteClient, Databases } = require('node-appwrite');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -22,16 +24,35 @@ const databases = new Databases(appwrite);
    WhatsApp Setup
 ----------------------- */
 
+// Detect environment: use headless mode for cloud (Railway, etc.)
+const isCloud = process.env.RAILWAY_ENVIRONMENT_NAME || process.env.VERCEL || process.env.HEROKU_APP_NAME;
+const puppeteerConfig = {
+    headless: isCloud ? true : false,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
+    ]
+};
+
+// On local macOS, optionally specify Chrome executable path if available
+const isLocalMac = process.platform === 'darwin' && !isCloud;
+if (isLocalMac) {
+    const macChromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(macChromePath)) {
+        puppeteerConfig.executablePath = macChromePath;
+    }
+}
+
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: {
-        executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    }
+    puppeteer: puppeteerConfig
 });
 
 // Rate limiting and delay settings (ms)
-const MESSAGE_DELAY_MS = parseInt(process.env.MESSAGE_DELAY_MS || '2000', 10);
-const MESSAGE_LIMIT_PER_MIN = parseInt(process.env.MESSAGE_LIMIT_PER_MIN || '30', 10);
+const MESSAGE_DELAY_MS = parseInt(process.env.MESSAGE_DELAY_MS || '1000', 10);
+const MESSAGE_DELAY_JITTER_PCT = parseInt(process.env.MESSAGE_DELAY_JITTER_PCT || '40', 10); // ±% randomness
+const MESSAGE_LIMIT_PER_MIN = parseInt(process.env.MESSAGE_LIMIT_PER_MIN || '25', 10);
 
 // Per-user tracking: last sent timestamp and recent message timestamps (for limit)
 const lastSentAt = new Map(); // userNumber -> timestamp
@@ -39,6 +60,14 @@ const recentTimestamps = new Map(); // userNumber -> [timestamps]
 
 function now() {
     return Date.now();
+}
+
+function getRandomDelay() {
+    // Add jitter: delays vary ±(MESSAGE_DELAY_JITTER_PCT)% from base MESSAGE_DELAY_MS
+    const jitterAmount = (MESSAGE_DELAY_MS * MESSAGE_DELAY_JITTER_PCT) / 100;
+    const minDelay = MESSAGE_DELAY_MS - jitterAmount;
+    const maxDelay = MESSAGE_DELAY_MS + jitterAmount;
+    return Math.random() * (maxDelay - minDelay) + minDelay;
 }
 
 function cleanupOldTimestamps(user) {
@@ -59,14 +88,18 @@ async function sendWithRateLimit(msgOrNumber, text) {
         if (msgOrNumber && msgOrNumber.reply) {
             await msgOrNumber.reply('You have reached the message limit. Please wait a while before sending more requests.');
         }
+        console.warn(`Rate limit exceeded for ${user}: ${timestamps.length}/${MESSAGE_LIMIT_PER_MIN} msgs/min`);
         return false;
     }
 
-    // enforce delay between messages
+    // enforce delay between messages with randomized jitter (looks more human)
     const last = lastSentAt.get(user) || 0;
     const elapsed = now() - last;
-    if (elapsed < MESSAGE_DELAY_MS) {
-        const wait = MESSAGE_DELAY_MS - elapsed;
+    const randomDelay = getRandomDelay();
+    
+    if (elapsed < randomDelay) {
+        const wait = randomDelay - elapsed;
+        console.log(`Delaying response to ${user} by ${Math.round(wait)}ms (human-like jitter)`);
         await new Promise(r => setTimeout(r, wait));
     }
 
@@ -123,12 +156,10 @@ client.on('message', async msg => {
     console.log('Incoming message type:', msg.type);
 
 
-    // If user says 'hi' send a plain-text menu (Buttons API is deprecated in
-    // some environments; using text menu is more stable and avoids deprecation
-    // warnings). Users can reply with the word or the number.
-    if (text === 'hi') {
-        const menu = `Hello 👋 Welcome to Support. Please choose an option:\n\n1️⃣ Demo\n2️⃣ Pricing\n3️⃣ Agent\n\nReply with the option number or name (e.g. '1' or 'Demo').`;
-        await msg.reply(menu);
+    // If user says 'hi' or it's a first interaction, send main menu
+    if (text === 'hi' || text === 'hello' || text === 'start' || text === '0') {
+        const mainMenu = `🟢 Welcome to Ritam Bharat Support\n\n👋 Welcome to Ritam Bharat Support\n\nRitam Bharat is a Hotel Operating System that helps independent hotels increase direct bookings and manage operations efficiently.\n\nHow can we assist you today?\n\n1️⃣ About Ritam Bharat\n2️⃣ Our Services\n3️⃣ How It Works\n4️⃣ Contact Our Team\n5️⃣ Talk to Support Executive\n\nPlease reply with the option number.`;
+        await sendWithRateLimit(msg, mainMenu);
         return;
     }
 
@@ -141,30 +172,35 @@ client.on('message', async msg => {
         console.log('Button response detected:', replyKey);
     }
 
-    // Handle numeric options and textual equivalents
-    // Define mapping — you will provide exact messages later; placeholders used now
-    const optionMap = {
-        '1': 'demo',
-        '2': 'pricing',
-        '3': 'agent',
-        'demo': 'demo',
-        'pricing': 'pricing',
-        'agent': 'agent'
+    // Define option responses
+    const optionResponses = {
+        '1': `🏨 About Ritam Bharat\n\nRitam Bharat is designed specially for independent hotels in India.\n\nWe help hotels:\n• Reduce OTA commissions\n• Get more direct bookings\n• Manage rooms & operations digitally\n• Improve revenue control\n\nOur mission is to make hotels independent and profitable.\n\nType 0 to return to main menu.`,
+        '2': `🛠 Our Services\n\n• Booking Management System\n• Direct Website Booking Engine\n• Hotel Dashboard & Reports\n• OTA Commission Reduction Strategy\n• Operational Automation\n\nEverything is designed for simple and practical usage.\n\nType 0 to return to main menu.`,
+        '3': `⚙ How Ritam Bharat Works\n\n1️⃣ We onboard your hotel\n2️⃣ Setup your booking system\n3️⃣ Connect your website\n4️⃣ Enable direct booking system\n5️⃣ Provide ongoing support\n\nOur system is easy to use and requires no technical knowledge.\n\nType 0 to return to main menu.`,
+        '4': `📞 Contact Ritam Bharat\n\nYou can reach us at:\n\n📱 WhatsApp: This number\n📧 Email: support@ritambharat.software\n🌐 Website: https://ritambharat.software\n\nOur team usually responds within working hours.\n\nType 0 to return to main menu.`,
+        '5': `👤 You are being connected to our support team.\n\nPlease describe your query in brief.\nOur executive will assist you shortly.`
     };
 
-    const selected = optionMap[replyKey];
-    if (selected === 'agent') {
-        await sendWithRateLimit(msg, 'Our agent will contact you shortly.');
-    } else if (selected === 'demo') {
-        // placeholder demo response
-        await sendWithRateLimit(msg, 'Demo info: This is a placeholder demo response.');
-    } else if (selected === 'pricing') {
-        // placeholder pricing response
-        await sendWithRateLimit(msg, 'Pricing info: This is a placeholder pricing response.');
+    const selected = optionResponses[replyKey];
+    if (selected) {
+        await sendWithRateLimit(msg, selected);
+    } else if (replyKey && !['0', 'hi', 'hello', 'start'].includes(replyKey)) {
+        const mainMenu = `🟢 Welcome to Ritam Bharat Support\n\n👋 Welcome to Ritam Bharat Support\n\nRitam Bharat is a Hotel Operating System that helps independent hotels increase direct bookings and manage operations efficiently.\n\nHow can we assist you today?\n\n1️⃣ About Ritam Bharat\n2️⃣ Our Services\n3️⃣ How It Works\n4️⃣ Contact Our Team\n5️⃣ Talk to Support Executive\n\nPlease reply with the option number.`;
+        await sendWithRateLimit(msg, mainMenu);
     }
 
 });
 
 client.initialize();
 
-app.listen(3000, () => console.log("Server Running"));
+// Health check endpoint for Railway / deployment monitoring
+app.get('/health', (req, res) => {
+    if (client.info && client.info.wid) {
+        res.status(200).json({ status: 'ok', bot_ready: true });
+    } else {
+        res.status(200).json({ status: 'initializing', bot_ready: false });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
